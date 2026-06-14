@@ -30,7 +30,13 @@ async function run() {
 
         const db = client.db("hire_loop")
         const jobsCollection = db.collection("jobs")
+        const companiesCollection = db.collection("companies")
 
+
+
+        // ======================================
+        //               jobs
+        //  =====================================
 
         // jobs get query
         app.get("/api/jobs", async (req, res) => {
@@ -47,12 +53,39 @@ async function run() {
             res.json(result)
         })
 
-        // jobs post 
+        // new jobs Create jobs post 
         app.post("/api/jobs", async (req, res) => {
             const jobs = req.body;
             const result = await jobsCollection.insertOne(jobs);
             res.json(result)
         })
+
+
+        // ======================================
+        //               companies
+        //  =====================================
+
+        // recruiter Id company data get
+        app.get("/api/my/companies", async (req, res) => {
+            const query = {}
+            if (req.query.recruiterId) {
+                query.recruiterId = req.query.recruiterId
+            }
+            const result = await companiesCollection.findOne(query)
+            res.json(result)
+        })
+
+
+        // Create Companies post companies
+        app.post("/api/companies", async (req, res) => {
+            const company = req.body
+            const result = await companiesCollection.insertOne(company)
+            res.json(result)
+        })
+
+
+
+
 
 
 
