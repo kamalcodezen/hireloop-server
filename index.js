@@ -32,7 +32,7 @@ async function run() {
         const jobsCollection = db.collection("jobs")
         const companiesCollection = db.collection("companies")
         const userCollection = db.collection("user")
-
+        const applicationCollection = db.collection("application")
 
         // user details get
         app.get("/api/user", async (req, res) => {
@@ -121,8 +121,19 @@ async function run() {
         })
 
 
+        // ======================================
+        //         job Apply application
+        //  =====================================
+        app.post("/api/application", async (req, res) => {
+            const data = req.body
+            const application = {
+                ...data,
+                createdAt: new Date()
+            }
+            const result = await applicationCollection.insertOne(application)
+            res.json(result)
 
-
+        })
 
 
 
