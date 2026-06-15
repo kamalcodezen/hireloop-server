@@ -31,18 +31,32 @@ async function run() {
         const db = client.db("hire_loop")
         const jobsCollection = db.collection("jobs")
         const companiesCollection = db.collection("companies")
+        const userCollection = db.collection("user")
 
 
+        // user details get
+        app.get("/api/user", async (req, res) => {
+            const cursor = await userCollection.find()
+            const result = await cursor.toArray()
+            res.json(result)
+        })
 
         // ======================================
         //               jobs
         //  =====================================
 
+        // get all jobs 
+        app.get("/api/jobs", async (req, res) => {
+            const cursor = await jobsCollection.find()
+            const result = await cursor.toArray()
+            res.json(result)
+        })
+
         // jobs get query
         app.get("/api/jobs", async (req, res) => {
             const query = {}
-            if (req.query.company) {
-                query.company = req.query.company
+            if (req.query.companyId) {
+                query.companyId = req.query.companyId
             }
             if (req.query.status) {
                 query.status = req.query.status
@@ -56,7 +70,11 @@ async function run() {
         // new jobs Create jobs post 
         app.post("/api/jobs", async (req, res) => {
             const jobs = req.body;
-            const result = await jobsCollection.insertOne(jobs);
+            const newJobs = {
+                ...jobs,
+                createdAt: new Date()
+            }
+            const result = await jobsCollection.insertOne(newJobs);
             res.json(result)
         })
 
@@ -65,6 +83,13 @@ async function run() {
         //               companies
         //  =====================================
 
+        // all companies data get
+        app.get("/api/companies", async (req, res) => {
+            const result = await companiesCollection.find().skip(7).toArray()
+            res.json(result)
+
+        })
+
         // recruiter Id company data get
         app.get("/api/my/companies", async (req, res) => {
             const query = {}
@@ -72,14 +97,18 @@ async function run() {
                 query.recruiterId = req.query.recruiterId
             }
             const result = await companiesCollection.findOne(query)
-            res.json(result)
+            res.json(result || {})
         })
 
 
         // Create Companies post companies
         app.post("/api/companies", async (req, res) => {
             const company = req.body
-            const result = await companiesCollection.insertOne(company)
+            const newCompany = {
+                ...company,
+                createdAt: new Date()
+            }
+            const result = await companiesCollection.insertOne(newCompany)
             res.json(result)
         })
 
