@@ -124,6 +124,7 @@ async function run() {
         // ======================================
         //         job Apply application
         //  =====================================
+        // job apply korche seta post korchi
         app.post("/api/application", async (req, res) => {
             const data = req.body
             const application = {
@@ -132,8 +133,24 @@ async function run() {
             }
             const result = await applicationCollection.insertOne(application)
             res.json(result)
+        })
+
+        // application data access in applicant ID mane je apply koreche tar id diye query korchi get
+        app.get("/api/application", async (req, res) => {
+            const query = {}
+            if (req.query.applicantId) {
+                query.applicantId = req.query.applicantId
+            }
+            if (req.query.userId) {
+                query.userId = req.query.userId
+            }
+            const cursor = await applicationCollection.find(query)
+            const result = await cursor.toArray()
+            res.json(result)
 
         })
+
+
 
 
 
