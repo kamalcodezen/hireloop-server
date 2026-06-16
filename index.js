@@ -33,6 +33,10 @@ async function run() {
         const companiesCollection = db.collection("companies")
         const userCollection = db.collection("user")
         const applicationCollection = db.collection("application")
+        const plansCollection = db.collection("plans")
+        const subscriptionCollection = db.collection("subscription")
+
+
 
         // user details get
         app.get("/api/user", async (req, res) => {
@@ -150,6 +154,46 @@ async function run() {
 
         })
 
+
+        // ======================================
+        //               plans
+        //  =====================================
+        // plans id diye kucjhi 
+        app.get("/api/plans", async (req, res) => {
+            const query = {}
+            if (req.query.plan_id) {
+                query.id = req.query.plan_id
+            }
+            const result = await plansCollection.findOne(query)
+            res.json(result)
+        })
+
+
+
+        // ======================================
+        //               subscription
+        //  =====================================
+        // user subscription post ki ki kinche
+        app.post("/api/subscription", async (req, res) => {
+            const data = req.body
+            const subsInfo = {
+                ...data,
+                createdAt: new Date()
+            }
+            const result = await subscriptionCollection.insertOne(subsInfo)
+
+
+            // update the user plan information
+            const filter = { email: data.email }
+
+            const updateDocument = {
+                $set: {
+                    plan: data.planId
+                }
+            }
+            const updateResult = await userCollection.updateOne(filter, updateDocument)
+            res.json(updateResult)
+        })
 
 
 
