@@ -123,14 +123,90 @@ app.post("/api/jobs", async (req, res) => {
 // ==========================================================================
 
 // এডমিন প্যানেলের জন্য সব কোম্পানির লিস্ট ডাটা ফেচ
+// app.get("/api/companies", async (req, res) => {
+//     try {
+//         const result = await req.db.companies.find().sort({ createdAt: -1 }).toArray();
+//         res.json(result);
+//     } catch (error) {
+//         res.status(500).json({ error: "Internal Server Error fetching corporate registry" });
+//     }
+// });
+// 
+
+
+
+
+// Aggregate jobCount
+// app.get("/api/companies", async (req, res) => {
+//     try {
+//         const cursor = await req.db.companies.find().sort({ createdAt: -1 });
+//         const companies = await cursor.toArray()
+
+//         for (const company of companies) {
+//             const filter = {
+//                 companyId: company._id.toString()
+//             }
+//             const jobCount = await req.db.jobs.countDocuments(filter)
+//             company.applications = jobCount
+//         }
+//         res.json(companies);
+//     } catch (error) {
+//         res.status(500).json({ error: "Internal Server Error fetching corporate registry" });
+//     }
+// });
+
+
+// pipline Aggregate jobCount
 app.get("/api/companies", async (req, res) => {
     try {
-        const result = await req.db.companies.find().sort({ createdAt: -1 }).toArray();
-        res.json(result);
+        // 🚀 মঙ্গোডিবির এগ্রিগেশন পাইপলাইন শুরু হচ্ছে (লুপ ছাড়া ১ বারে ডাটা আনার জাদুর ফ্যাক্টরি)
+        const companiesWithJobCount = await req.db.companies.aggregate([
+            {
+                // 🔗 ধাপ ১: $lookup দিয়ে companies কালেকশনের সাথে jobs কালেকশনের জোড়াতালি বা রিলেশন তৈরি করা
+                $lookup: {
+                    from: "jobs", // কোন কালেকশন থেকে ডাটা আসবে? উত্তর: jobs কালেকশন
+                    let: { company_id: { $toString: "$_id" } }, // কোম্পানির ObjectId-কে স্ট্রিং বানিয়ে একটা চলক (variable) এ রাখা হলো
+                    pipeline: [
+                        {
+                            // 🎯 ম্যাচিং লজিক: জবের ভেতরের companyId আর আমাদের কোম্পানির আইডি মিলিয়ে দেখা হচ্ছে
+                            $match: {
+                                $expr: { $eq: ["$companyId", "$$company_id"] }
+                            }
+                        }
+                    ],
+                    as: "allJobs" // ম্যাচ হওয়া সব জব এই 'allJobs' নামের একটা থলে বা অ্যারে (Array) তে জমা হবে
+                }
+            },
+            {
+                // ➕ ধাপ ২: $addFields দিয়ে কোম্পানির সব পুরোনো ডাটা ঠিক রেখে নতুন একটা চাবি (Field) যোগ করা
+                $addFields: {
+                    applications: { $size: "$allJobs" } // 'allJobs' থলের ভেতর কয়টা জব আছে সেই সংখ্যাটা (Size) গুনে applications-এ রাখা হলো
+                }
+            },
+            {
+                // ✂️ ধাপ ৩: $project দিয়ে জবের ফুল লিস্টের বড় অ্যারেটা ডিলিট (0) করে দেওয়া যেন এপিআই হালকা ও ফাস্ট থাকে
+                $project: {
+                    allJobs: 0 // জবের ডিটেইলস আমাদের লাগবে না (শুধু সংখ্যা হলেই হবে), তাই এটিকে ০ করে বাদ দেওয়া হলো
+                }
+            },
+            {
+                // 📊 ধাপ ৪: $sort দিয়ে সিরিয়াল ঠিক করা
+                $sort: { createdAt: -1 } // একদম নতুন তৈরি হওয়া কোম্পানিটি এডমিন স্ক্রিনে সবার ওপরে (Latest First) দেখাবে
+            }
+        ]).toArray(); // সব ধাপ পার হওয়া ডাটাকে একটা সুন্দর অ্যারে বানিয়ে ফেলা হলো
+
+        // 🎯 সব ডেটা সফলভাবে ফ্রন্টএন্ডে রেসপন্স হিসেবে পাঠিয়ে দেওয়া হলো
+        res.json(companiesWithJobCount);
+
     } catch (error) {
+        // ❌ যদি কোনো কারণে ডাটাবেজে এরর আসে, তবে ক্যাচ ব্লকে ধরা পড়বে
         res.status(500).json({ error: "Internal Server Error fetching corporate registry" });
     }
 });
+
+
+
+
 
 // রিক্রুটার আইডি অনুযায়ী নির্দিষ্ট কোম্পানির সিঙ্গেল প্রোফাইল দেখা
 app.get("/api/my/companies", async (req, res) => {
