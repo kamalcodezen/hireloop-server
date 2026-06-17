@@ -1,4 +1,685 @@
 const express = require('express');
+const cors = require('cors');
+const dotenv = require("dotenv");
+
+// 💡 ১. সবার আগে dotenv রান করবে যেন নোড জেএস .env ফাইলটি আগে লোড করতে পারে
+dotenv.config();
+
+// 💡 ২. ডট-এনভ লোড হওয়ার পরেই কেবল আমাদের db.js এর গ্লোবাল কানেকশন হেল্পার ইম্পোর্ট হবে
+const { getDb } = require('./db');
+const { ObjectId } = require('mongodb');
+
+const app = express();
+const port = process.env.PORT || 5000;
+
+// মিডেলওয়্যারসমূহ
+app.use(cors());
+app.use(express.json()); // ফ্রন্টএন্ড থেকে আসা জেসন ডাটা পার্স করার জন্য
+
+// ==========================================================================
+// 🧙‍♂️ জাদুর মিডলওয়্যার: এটি প্রতিটা রিকোয়েস্টে অটোমেটিক কালেকশনগুলো রেডি করে দেবে
+// ==========================================================================
+app.use(async (req, res, next) => {
+    try {
+        const db = await getDb(); // গ্লোবাল ক্যাশ কানেকশন পুল থেকে ডাটাবেজ কল
+
+        // সব কালেকশনকে 'req.db' অবজেক্টের ভেতর ঢুকিয়ে দেওয়া হলো
+        req.db = {
+            users: db.collection("user"),
+            jobs: db.collection("jobs"),
+            companies: db.collection("companies"),
+            applications: db.collection("application"),
+            plans: db.collection("plans"),
+            subscriptions: db.collection("subscription")
+        };
+
+        next(); // পরের ধাপে (এপিআই রাউটে) যাওয়ার অনুমতি দেওয়া হলো
+    } catch (error) {
+        res.status(500).json({ error: "Database connection failed via middleware" });
+    }
+});
+
+// ==========================================================================
+//                                🎯 USERS
+// ==========================================================================
+
+// সব ইউজারের ডিটেইলস নিয়ে আসা (এডমিন প্যানেলের জন্য)
+app.get("/api/user", async (req, res) => {
+    try {
+        // 👈 মিডলওয়্যারের কারণে সরাসরি req.db.users ব্যবহার করা যাচ্ছে
+        const result = await req.db.users.find().toArray();
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error fetching users" });
+    }
+});
+
+// ==========================================================================
+//                                🎯 JOBS
+// ==========================================================================
+
+// অল-ইন-ওয়ান রাউট (সব জব নিয়ে আসা + কোয়েরি ফিল্টারিং)
+app.get("/api/jobs", async (req, res) => {
+    try {
+        const query = {};
+
+        // ইউআরএল কোয়েরি প্যারামিটার (?companyId=...&status=...) হ্যান্ডেল করা
+        if (req.query.companyId) {
+            query.companyId = req.query.companyId;
+        }
+        if (req.query.status) {
+            query.status = req.query.status;
+        }
+
+        // 👈 কোনো এক্সট্রা লাইন ছাড়া সরাসরি req.db.jobs
+        const result = await req.db.jobs.find(query).sort({ createdAt: -1 }).toArray();
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error fetching jobs" });
+    }
+});
+
+// নির্দিষ্ট আইডি অনুযায়ী সিঙ্গেল জব ডিটেইলস দেখা
+app.get("/api/jobs/:id", async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        // মঙ্গোডিবি আইডি ফরমেট ভ্যালিডেশন চেক
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).json({ error: "Invalid Job ID format" });
+        }
+
+        const result = await req.db.jobs.findOne({ _id: new ObjectId(id) });
+        if (!result) return res.status(404).json({ error: "Job opening not found" });
+
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error fetching job item" });
+    }
+});
+
+// নতুন জব সার্কুলার পোস্ট করা
+app.post("/api/jobs", async (req, res) => {
+    try {
+        const jobs = req.body;
+
+        if (!jobs.title || !jobs.companyId) {
+            return res.status(400).json({ error: "Missing required core job information fields" });
+        }
+
+        const newJobs = {
+            ...jobs,
+            createdAt: new Date()
+        };
+        const result = await req.db.jobs.insertOne(newJobs);
+        res.status(201).json(result);
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error creating job post" });
+    }
+});
+
+// ==========================================================================
+//                               🎯 COMPANIES
+// ==========================================================================
+
+// এডমিন প্যানেলের জন্য সব কোম্পানির লিস্ট ডাটা ফেচ
+app.get("/api/companies", async (req, res) => {
+    try {
+        const result = await req.db.companies.find().sort({ createdAt: -1 }).toArray();
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error fetching corporate registry" });
+    }
+});
+
+// রিক্রুটার আইডি অনুযায়ী নির্দিষ্ট কোম্পানির সিঙ্গেল প্রোফাইল দেখা
+app.get("/api/my/companies", async (req, res) => {
+    try {
+        const query = {};
+
+        if (req.query.recruiterId) {
+            query.recruiterId = req.query.recruiterId;
+        } else {
+            return res.status(400).json({ error: "Recruiter ID query param is required" });
+        }
+
+        const result = await req.db.companies.findOne(query);
+        res.json(result || {});
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error validating recruiter client data" });
+    }
+});
+
+// নতুন কোম্পানি রেজিস্ট্রেশন পোস্ট
+app.post("/api/companies", async (req, res) => {
+    try {
+        const company = req.body;
+
+        if (!company.name || !company.recruiterId) {
+            return res.status(400).json({ error: "Company profile core inputs are missing" });
+        }
+
+        const newCompany = {
+            ...company,
+            status: company.status || "Pending",
+            createdAt: new Date()
+        };
+        const result = await req.db.companies.insertOne(newCompany);
+        res.status(201).json(result);
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error creating company profile" });
+    }
+});
+
+// এডমিন প্যানেল থেকে কোম্পানির স্ট্যাটাস (Approved / Rejected) পরিবর্তন করা
+app.patch("/api/companies/:id", async (req, res) => {
+    try {
+        const { id } = req.params;
+        const updateData = req.body;
+
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).json({ error: "Invalid target entity identification metadata ID" });
+        }
+        if (!updateData?.status) {
+            return res.status(400).json({ error: "Action processing system requires status key updates" });
+        }
+
+        const result = await req.db.companies.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { status: updateData.status } }
+        );
+
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error applying core state updates" });
+    }
+});
+
+// ==========================================================================
+//                             🎯 APPLICATIONS
+// ==========================================================================
+
+// নতুন অ্যাপ্লিকেশন সাবমিট করা
+app.post("/api/application", async (req, res) => {
+    try {
+        const data = req.body;
+
+        if (!data.jobId || !data.applicantId) {
+            return res.status(400).json({ error: "Missing linkage IDs required for application records" });
+        }
+
+        const application = {
+            ...data,
+            createdAt: new Date()
+        };
+        const result = await req.db.applications.insertOne(application);
+        res.status(201).json(result);
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error posting candidate application" });
+    }
+});
+
+// অ্যাপ্লিকেশন কুয়েরি করে তুলে আনা
+app.get("/api/application", async (req, res) => {
+    try {
+        const query = {};
+
+        if (req.query.applicantId) {
+            query.applicantId = req.query.applicantId;
+        }
+        if (req.query.userId) {
+            query.userId = req.query.userId;
+        }
+
+        const result = await req.db.applications.find(query).sort({ createdAt: -1 }).toArray();
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error structural directory sync failed" });
+    }
+});
+
+// ==========================================================================
+//                                🎯 PLANS
+// ==========================================================================
+
+// আইডি ফিল্টার দিয়ে নির্দিষ্ট সাবস্ক্রিপশন প্ল্যান খুঁজে বের করা
+app.get("/api/plans", async (req, res) => {
+    try {
+        const query = {};
+
+        if (req.query.plan_id) {
+            query.id = req.query.plan_id;
+        }
+        const result = await req.db.plans.findOne(query);
+        res.json(result || {});
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error fetching subscription directory metrics" });
+    }
+});
+
+// ==========================================================================
+//                             🎯 SUBSCRIPTIONS
+// ==========================================================================
+
+// প্রিমিয়াম প্ল্যান কেনা এবং ইউজারের কালেকশনে প্ল্যান আপডেট করা
+app.post("/api/subscription", async (req, res) => {
+    try {
+        const data = req.body;
+
+        if (!data.email || !data.planId) {
+            return res.status(400).json({ error: "Email identity token and core plan tracking codes missing" });
+        }
+
+        const subsInfo = {
+            ...data,
+            createdAt: new Date()
+        };
+
+        // ১. সাবস্ক্রিপশন ট্র্যাকিং লগে ডাটা ইনসার্ট করা
+        await req.db.subscriptions.insertOne(subsInfo);
+
+        // ২. মেইন ইউজার অবজেক্টের মেম্বারশিপ প্ল্যান আপডেট করা
+        const filter = { email: data.email };
+        const updateDocument = {
+            $set: { plan: data.planId }
+        };
+
+        const updateResult = await req.db.users.updateOne(filter, updateDocument);
+        res.json(updateResult);
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error deploying membership ledger tokens" });
+    }
+});
+
+// ==========================================================================
+//                             ⚙️ SYSTEM RUNNERS
+// ==========================================================================
+
+// রুট বেস হেলথ চেক পাথ রাউট
+app.get('/', (req, res) => {
+    res.send('HireLoop cluster system environment is running active, optimized and clean!');
+});
+
+// সার্ভার লিসেনিং পোর্ট রানার
+app.listen(port, () => {
+    console.log(`HireLoop app listening on port ${port}`);
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+
+const express = require('express');
+const dotenv = require("dotenv");
+const cors = require("cors");
+
+// এনভায়রনমেন্ট ভেরিয়েবল কনফিগারেশন
+dotenv.config();
+
+
+// 💡 ১. আমাদের নতুন গ্লোবাল কানেকশন হেল্পারটি ইম্পোর্ট করা হলো
+const { getDb } = require('./db');
+const { ObjectId } = require('mongodb');
+
+
+
+const app = express();
+const port = process.env.PORT || 5000;
+
+// মিডেলওয়্যারসমূহ
+app.use(cors());
+app.use(express.json()); // ফ্রন্টএন্ড থেকে আসা জেসন ডাটা পার্স করার জন্য
+
+// ==========================================================================
+//                                USERS
+// ==========================================================================
+
+// সব ইউজারের ডিটেইলস নিয়ে আসা (এডমিন প্যানেলের জন্য)
+app.get("/api/user", async (req, res) => {
+    try {
+        const db = await getDb(); // গ্লোবাল কানেকশন পুল থেকে ডাটাবেজ কল
+        const userCollection = db.collection("user");
+
+        const result = await userCollection.find().toArray();
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error fetching users" });
+    }
+});
+
+// ==========================================================================
+//                                JOBS
+// ==========================================================================
+
+// অল-ইন-ওয়ান রাউট (সব জব নিয়ে আসা + ফিল্টারিং)
+app.get("/api/jobs", async (req, res) => {
+    try {
+        const db = await getDb();
+        const jobsCollection = db.collection("jobs");
+        const query = {};
+
+        if (req.query.companyId) {
+            query.companyId = req.query.companyId;
+        }
+        if (req.query.status) {
+            query.status = req.query.status;
+        }
+
+        const result = await jobsCollection.find(query).sort({ createdAt: -1 }).toArray();
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error fetching jobs" });
+    }
+});
+
+// নির্দিষ্ট আইডি অনুযায়ী সিঙ্গেল জব ডিটেইলস দেখা
+app.get("/api/jobs/:id", async (req, res) => {
+    try {
+        const db = await getDb();
+        const jobsCollection = db.collection("jobs");
+        const { id } = req.params;
+
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).json({ error: "Invalid Job ID format" });
+        }
+
+        const result = await jobsCollection.findOne({ _id: new ObjectId(id) });
+        if (!result) return res.status(404).json({ error: "Job opening not found" });
+
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error fetching job item" });
+    }
+});
+
+// নতুন জব সার্কুলার পোস্ট করা
+app.post("/api/jobs", async (req, res) => {
+    try {
+        const db = await getDb();
+        const jobsCollection = db.collection("jobs");
+        const jobs = req.body;
+
+        if (!jobs.title || !jobs.companyId) {
+            return res.status(400).json({ error: "Missing required core job information fields" });
+        }
+
+        const newJobs = {
+            ...jobs,
+            createdAt: new Date()
+        };
+        const result = await jobsCollection.insertOne(newJobs);
+        res.status(201).json(result);
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error creating job post" });
+    }
+});
+
+// ==========================================================================
+//                              COMPANIES
+// ==========================================================================
+
+// এডমিন প্যানেলের জন্য সব কোম্পানির লিস্ট ডাটা ফেচ
+app.get("/api/companies", async (req, res) => {
+    try {
+        const db = await getDb();
+        const companiesCollection = db.collection("companies");
+
+        const result = await companiesCollection.find().sort({ createdAt: -1 }).toArray();
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error fetching corporate registry" });
+    }
+});
+
+// রিক্রুটার আইডি অনুযায়ী নির্দিষ্ট কোম্পানির সিঙ্গেল প্রোফাইল দেখা
+app.get("/api/my/companies", async (req, res) => {
+    try {
+        const db = await getDb();
+        const companiesCollection = db.collection("companies");
+        const query = {};
+
+        if (req.query.recruiterId) {
+            query.recruiterId = req.query.recruiterId;
+        } else {
+            return res.status(400).json({ error: "Recruiter ID query param is required" });
+        }
+
+        const result = await companiesCollection.findOne(query);
+        res.json(result || {});
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error validating recruiter client data" });
+    }
+});
+
+// নতুন কোম্পানি রেজিস্ট্রেশন পোস্ট
+app.post("/api/companies", async (req, res) => {
+    try {
+        const db = await getDb();
+        const companiesCollection = db.collection("companies");
+        const company = req.body;
+
+        if (!company.name || !company.recruiterId) {
+            return res.status(400).json({ error: "Company profile core inputs are missing" });
+        }
+
+        const newCompany = {
+            ...company,
+            status: company.status || "Pending",
+            createdAt: new Date()
+        };
+        const result = await companiesCollection.insertOne(newCompany);
+        res.status(201).json(result);
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error creating company profile" });
+    }
+});
+
+// এডমিন প্যানেল থেকে কোম্পানির স্ট্যাটাস (Approved / Rejected) পরিবর্তন করা
+app.patch("/api/companies/:id", async (req, res) => {
+    try {
+        const db = await getDb();
+        const companiesCollection = db.collection("companies");
+        const { id } = req.params;
+        const updateData = req.body;
+
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).json({ error: "Invalid target entity identification metadata ID" });
+        }
+        if (!updateData?.status) {
+            return res.status(400).json({ error: "Action processing system requires status key updates" });
+        }
+
+        const result = await companiesCollection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { status: updateData.status } }
+        );
+
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error applying core state updates" });
+    }
+});
+
+// ==========================================================================
+//                             APPLICATIONS
+// ==========================================================================
+
+// নতুন অ্যাপ্লিকেশন সাবমিট করা
+app.post("/api/application", async (req, res) => {
+    try {
+        const db = await getDb();
+        const applicationCollection = db.collection("application");
+        const data = req.body;
+
+        if (!data.jobId || !data.applicantId) {
+            return res.status(400).json({ error: "Missing linkage IDs required for application records" });
+        }
+
+        const application = {
+            ...data,
+            createdAt: new Date()
+        };
+        const result = await applicationCollection.insertOne(application);
+        res.status(201).json(result);
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error posting candidate application" });
+    }
+});
+
+// অ্যাপ্লিকেশন কুয়েরি করে তুলে আনা
+app.get("/api/application", async (req, res) => {
+    try {
+        const db = await getDb();
+        const applicationCollection = db.collection("application");
+        const query = {};
+
+        if (req.query.applicantId) {
+            query.applicantId = req.query.applicantId;
+        }
+        if (req.query.userId) {
+            query.userId = req.query.userId;
+        }
+
+        const result = await applicationCollection.find(query).sort({ createdAt: -1 }).toArray();
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error structural directory sync failed" });
+    }
+});
+
+// ==========================================================================
+//                                PLANS
+// ==========================================================================
+
+app.get("/api/plans", async (req, res) => {
+    try {
+        const db = await getDb();
+        const plansCollection = db.collection("plans");
+        const query = {};
+
+        if (req.query.plan_id) {
+            query.id = req.query.plan_id;
+        }
+        const result = await plansCollection.findOne(query);
+        res.json(result || {});
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error fetching subscription directory metrics" });
+    }
+});
+
+// ==========================================================================
+//                            SUBSCRIPTIONS
+// ==========================================================================
+
+app.post("/api/subscription", async (req, res) => {
+    try {
+        const db = await getDb();
+        const subscriptionCollection = db.collection("subscription");
+        const userCollection = db.collection("user");
+        const data = req.body;
+
+        if (!data.email || !data.planId) {
+            return res.status(400).json({ error: "Email identity token and core plan tracking codes missing" });
+        }
+
+        const subsInfo = {
+            ...data,
+            createdAt: new Date()
+        };
+
+        await subscriptionCollection.insertOne(subsInfo);
+
+        const filter = { email: data.email };
+        const updateDocument = {
+            $set: { plan: data.planId }
+        };
+
+        const updateResult = await userCollection.updateOne(filter, updateDocument);
+        res.json(updateResult);
+    } catch (error) {
+        res.status(500).json({ error: "Internal Server Error deploying membership ledger tokens" });
+    }
+});
+
+// রুট বেস হেলথ চেক পাথ রাউট
+app.get('/', (req, res) => {
+    res.send('HireLoop cluster system environment is running active and optimized!');
+});
+
+// সার্ভার লিসেনিং পোর্ট রানার
+app.listen(port, () => {
+    console.log(`HireLoop app listening on port ${port}`);
+});
+
+
+
+*/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*    
+const express = require('express');
 const dotenv = require("dotenv");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
@@ -58,7 +739,7 @@ async function run() {
         // ==========================================================================
 
         /* 💡 FIXED: ডুপ্লিকেট রাউট দূর করে অল-ইন-ওয়ান রাউট করা হয়েছে। 
-           এটি একই সাথে সব জব নিয়ে আসবে আবার কুয়েরি ফিল্টার (?companyId=...&status=...) ও হ্যান্ডেল করবে। */
+           এটি একই সাথে সব জব নিয়ে আসবে আবার কুয়েরি ফিল্টার (?companyId=...&status=...) ও হ্যান্ডেল করবে। 
         app.get("/api/jobs", async (req, res) => {
             try {
                 const query = {};
@@ -318,3 +999,5 @@ app.get('/', (req, res) => {
 app.listen(port, () => {
     console.log(`HireLoop app listening on port ${port}`)
 });
+
+*/
