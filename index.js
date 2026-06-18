@@ -5,7 +5,7 @@ const dotenv = require("dotenv");
 // 💡 ১. সবার আগে dotenv রান করবে যেন নোড জেএস .env ফাইলটি আগে লোড করতে পারে
 dotenv.config();
 
-// 💡 ২. ডট-এনভ লোড হওয়ার পরেই কেবল আমাদের db.js এর গ্লোবাল কানেকশন হেল্পার ইম্পোর্ট হবে
+// 💡 ২. ডট-এনভ লোড হওয়ার পরেই কেবল আমাদের db.js এর গ্লোবাল কানেকশন হেল্পার ইম্পোর্ট হবে
 const { getDb } = require('./db');
 const { ObjectId } = require('mongodb');
 
@@ -16,28 +16,90 @@ const port = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json()); // ফ্রন্টএন্ড থেকে আসা জেসন ডাটা পার্স করার জন্য
 
+
 // ==========================================================================
-// 🧙‍♂️ জাদুর মিডলওয়্যার: এটি প্রতিটা রিকোয়েস্টে অটোমেটিক কালেকশনগুলো রেডি করে দেবে
+// 🧙‍♂️ জাদুর মিডলওয়্যার: এটি প্রতিটা রিকোয়েস্টে অটোমেটিক কালেকশনগুলো রেডি করে দেবে
 // ==========================================================================
 app.use(async (req, res, next) => {
     try {
         const db = await getDb(); // গ্লোবাল ক্যাশ কানেকশন পুল থেকে ডাটাবেজ কল
 
-        // সব কালেকশনকে 'req.db' অবজেক্টের ভেতর ঢুকিয়ে দেওয়া হলো
+        // সব কালেকশনকে 'req.db' অবজেক্টের ভেতর ঢুকিয়ে দেওয়া হলো
         req.db = {
             users: db.collection("user"),
             jobs: db.collection("jobs"),
             companies: db.collection("companies"),
             applications: db.collection("application"),
             plans: db.collection("plans"),
-            subscriptions: db.collection("subscription")
+            subscriptions: db.collection("subscription"),
+            sessionCollection: db.collection("session")
         };
 
-        next(); // পরের ধাপে (এপিআই রাউটে) যাওয়ার অনুমতি দেওয়া হলো
+        next(); // পরের ধাপে (এপিআই রাউটে) যাওয়ার অনুমতি দেওয়া হলো
     } catch (error) {
         res.status(500).json({ error: "Database connection failed via middleware" });
     }
 });
+
+// ==========================================================================
+// 🔐 AUTHENTICATION & SECURITY MIDDLEWARES (🛡️ সম্পূর্ণ ফিক্সড ও সুরক্ষিত)
+// ==========================================================================
+
+// 🛡️ টোকেন ভেরিফাই করার মিডলওয়্যার (ইউজার লগইন আছে কি না চেক করে)
+const verifyToken = async (req, res, next) => {
+    try {
+        const authHeader = req.headers?.authorization; // রিকোয়েস্ট হেডার থেকে টোকেন নেওয়া হলো
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({ message: "Unauthorized: Missing token" });
+        }
+
+        const token = authHeader.split(" ")[1]; // 'Bearer TOKEN_STRING' থেকে শুধু মেইন টোকেনটা আলাদা করা হলো
+
+        const query = { token: token };
+        const session = await req.db.sessionCollection.findOne(query); // সেশন কালেকশনে টোকেনটি খোঁজা হচ্ছে
+
+        if (!session) {
+            return res.status(401).json({ message: "Unauthorized: Invalid Session" });
+        }
+
+        const userId = session.userId;
+        const user = await req.db.users.findOne({ _id: new ObjectId(userId) }); // সেশনের ইউজার আইডি দিয়ে ইউজারকে খোঁজা হচ্ছে
+
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        req.user = user; // খুঁজে পাওয়া ইউজারকে রিকোয়েস্টের ভেতর পাস করে দেওয়া হলো যেন পরের রাউটগুলো ব্যবহার করতে পারে
+        next();
+    } catch (error) {
+        return res.status(500).json({ error: "Authentication internal error" });
+    }
+};
+
+// 🧑‍💻 শুধুমাত্র জব সিকার (Job Seeker) ভেরিফাই করার মিডলওয়্যার
+const verifySeeker = (req, res, next) => {
+    if (req.user?.role !== "seeker") {
+        return res.status(403).json({ message: "Forbidden: Seeker access required" });
+    }
+    next();
+};
+
+// 💼 শুধুমাত্র রিক্রুটার (Recruiter) ভেরিফাই করার মিডলওয়্যার
+const verifyRecruiter = (req, res, next) => {
+    if (req.user?.role !== "recruiter") {
+        return res.status(403).json({ message: "Forbidden: Recruiter access required" });
+    }
+    next();
+};
+
+// 👑 শুধুমাত্র মেইন এডমিন (Admin) ভেরিফাই করার মিডলওয়্যার
+const verifyAdmin = (req, res, next) => {
+    if (req.user?.role !== "admin") {
+        return res.status(403).json({ message: "Forbidden: Admin access required" });
+    }
+    next();
+};
+
 
 // ==========================================================================
 //                                🎯 USERS
@@ -46,7 +108,7 @@ app.use(async (req, res, next) => {
 // সব ইউজারের ডিটেইলস নিয়ে আসা (এডমিন প্যানেলের জন্য)
 app.get("/api/user", async (req, res) => {
     try {
-        // 👈 মিডলওয়্যারের কারণে সরাসরি req.db.users ব্যবহার করা যাচ্ছে
+        // 👈 মিডলওয়্যারের কারণে সরাসরি req.db.users ব্যবহার করা যাচ্ছে
         const result = await req.db.users.find().toArray();
         res.json(result);
     } catch (error) {
@@ -66,12 +128,17 @@ app.get("/api/jobs", async (req, res) => {
         // ইউআরএল কোয়েরি প্যারামিটার (?companyId=...&status=...) হ্যান্ডেল করা
         if (req.query.companyId) {
             query.companyId = req.query.companyId;
+
+            if (req.user?._id.toString() !== req.query.applicantId) {
+                return res.status(403).json({ message: "Forbidden access identity mismatch" });
+            }
         }
+
         if (req.query.status) {
             query.status = req.query.status;
         }
 
-        // 👈 কোনো এক্সট্রা লাইন ছাড়া সরাসরি req.db.jobs
+        // 👈 কোনো এক্সট্রা লাইন ছাড়া সরাসরি req.db.jobs থেকে ডাটা সর্ট করে আনা
         const result = await req.db.jobs.find(query).sort({ createdAt: -1 }).toArray();
         res.json(result);
     } catch (error) {
@@ -84,7 +151,7 @@ app.get("/api/jobs/:id", async (req, res) => {
     try {
         const { id } = req.params;
 
-        // মঙ্গোডিবি আইডি ফরমেট ভ্যালিডেশন চেক
+        // মঙ্গোডিবি আইডি ফরমেট ভ্যালিডেশন চেক (ভুল আইডি ফরম্যাটে ক্র্যাশ ঠেকাতে)
         if (!ObjectId.isValid(id)) {
             return res.status(400).json({ error: "Invalid Job ID format" });
         }
@@ -109,7 +176,7 @@ app.post("/api/jobs", async (req, res) => {
 
         const newJobs = {
             ...jobs,
-            createdAt: new Date()
+            createdAt: new Date() // কারেন্ট সার্ভার টাইমস্ট্যাম্প অ্যাড করা হলো
         };
         const result = await req.db.jobs.insertOne(newJobs);
         res.status(201).json(result);
@@ -122,65 +189,38 @@ app.post("/api/jobs", async (req, res) => {
 //                               🎯 COMPANIES
 // ==========================================================================
 
-// এডমিন প্যানেলের জন্য সব কোম্পানির লিস্ট ডাটা ফেচ
-// app.get("/api/companies", async (req, res) => {
-//     try {
-//         const result = await req.db.companies.find().sort({ createdAt: -1 }).toArray();
-//         res.json(result);
-//     } catch (error) {
-//         res.status(500).json({ error: "Internal Server Error fetching corporate registry" });
-//     }
-// });
-// 
-
-
-
-
-// Aggregate jobCount
-// app.get("/api/companies", async (req, res) => {
-//     try {
-//         const cursor = await req.db.companies.find().sort({ createdAt: -1 });
-//         const companies = await cursor.toArray()
-
-//         for (const company of companies) {
-//             const filter = {
-//                 companyId: company._id.toString()
-//             }
-//             const jobCount = await req.db.jobs.countDocuments(filter)
-//             company.applications = jobCount
-//         }
-//         res.json(companies);
-//     } catch (error) {
-//         res.status(500).json({ error: "Internal Server Error fetching corporate registry" });
-//     }
-// });
-
-
-// pipline Aggregate jobCount
-app.get("/api/companies", async (req, res) => {
+// 🚀 মঙ্গোডিবির এগ্রিগেশন পাইপলাইন শুরু হচ্ছে (লুপ ছাড়া ১ বারে নিখুঁত ডাটা আনার জাদুর ফ্যাক্টরি)
+app.get("/api/companies", verifyToken, verifyAdmin, async (req, res) => {
     try {
-        // 🚀 মঙ্গোডিবির এগ্রিগেশন পাইপলাইন শুরু হচ্ছে (লুপ ছাড়া ১ বারে ডাটা আনার জাদুর ফ্যাক্টরি)
         const companiesWithJobCount = await req.db.companies.aggregate([
             {
                 // 🔗 ধাপ ১: $lookup দিয়ে companies কালেকশনের সাথে jobs কালেকশনের জোড়াতালি বা রিলেশন তৈরি করা
                 $lookup: {
                     from: "jobs", // কোন কালেকশন থেকে ডাটা আসবে? উত্তর: jobs কালেকশন
-                    let: { company_id: { $toString: "$_id" } }, // কোম্পানির ObjectId-কে স্ট্রিং বানিয়ে একটা চলক (variable) এ রাখা হলো
+                    let: {
+                        company_obj_id: "$_id", // কোম্পানির আসল ObjectId চলক
+                        company_str_id: { $toString: "$_id" } // কোম্পানির আইডি-কে স্ট্রিং বানানো চলক
+                    },
                     pipeline: [
                         {
-                            // 🎯 ম্যাচিং লজিক: জবের ভেতরের companyId আর আমাদের কোম্পানির আইডি মিলিয়ে দেখা হচ্ছে
+                            // 🎯 ম্যাচিং লজিক আপডেট: জবের companyId স্ট্রিং হোক বা ObjectId—উভয়ের সাথেই মিলিয়ে দেখা হচ্ছে
                             $match: {
-                                $expr: { $eq: ["$companyId", "$$company_id"] }
+                                $expr: {
+                                    $or: [
+                                        { $eq: ["$companyId", "$$company_str_id"] },
+                                        { $eq: ["$companyId", "$$company_obj_id"] }
+                                    ]
+                                }
                             }
                         }
                     ],
-                    as: "allJobs" // ম্যাচ হওয়া সব জব এই 'allJobs' নামের একটা থলে বা অ্যারে (Array) তে জমা হবে
+                    as: "allJobs" // ম্যাচ হওয়া সব জব এই 'allJobs' নামের অ্যারে (Array) তে জমা হবে
                 }
             },
             {
-                // ➕ ধাপ ২: $addFields দিয়ে কোম্পানির সব পুরোনো ডাটা ঠিক রেখে নতুন একটা চাবি (Field) যোগ করা
+                // ➕ ্মধাপ ২: $addFields দিয়ে কোম্পানির সব পুরোনো ডাটা ঠিক রেখে নতুন একটা চাবি (Field) যোগ করা
                 $addFields: {
-                    applications: { $size: "$allJobs" } // 'allJobs' থলের ভেতর কয়টা জব আছে সেই সংখ্যাটা (Size) গুনে applications-এ রাখা হলো
+                    applications: { $size: "$allJobs" } // 'allJobs' থলের ভেতর কয়টা জব আছে সেই সংখ্যাটা গুনে applications-এ রাখা হলো
                 }
             },
             {
@@ -191,24 +231,18 @@ app.get("/api/companies", async (req, res) => {
             },
             {
                 // 📊 ধাপ ৪: $sort দিয়ে সিরিয়াল ঠিক করা
-                $sort: { createdAt: -1 } // একদম নতুন তৈরি হওয়া কোম্পানিটি এডমিন স্ক্রিনে সবার ওপরে (Latest First) দেখাবে
+                $sort: { createdAt: -1 } // একদম নতুন তৈরি হওয়া কোম্পানিটি এডমিন স্ক্রিনে সবার ওপরে দেখাবে
             }
         ]).toArray(); // সব ধাপ পার হওয়া ডাটাকে একটা সুন্দর অ্যারে বানিয়ে ফেলা হলো
 
         // 🎯 সব ডেটা সফলভাবে ফ্রন্টএন্ডে রেসপন্স হিসেবে পাঠিয়ে দেওয়া হলো
         res.json(companiesWithJobCount);
-
     } catch (error) {
-        // ❌ যদি কোনো কারণে ডাটাবেজে এরর আসে, তবে ক্যাচ ব্লকে ধরা পড়বে
         res.status(500).json({ error: "Internal Server Error fetching corporate registry" });
     }
 });
 
-
-
-
-
-// রিক্রুটার আইডি অনুযায়ী নির্দিষ্ট কোম্পানির সিঙ্গেল প্রোফাইল দেখা
+// রিক্রুটার আইডি অনুযায়ী নির্দিষ্ট কোম্পানির সিঙ্গেল প্রোফাইল দেখা
 app.get("/api/my/companies", async (req, res) => {
     try {
         const query = {};
@@ -237,7 +271,7 @@ app.post("/api/companies", async (req, res) => {
 
         const newCompany = {
             ...company,
-            status: company.status || "Pending",
+            status: company.status || "Pending", // ডিফল্ট স্ট্যাটাস পেন্ডিং থাকবে
             createdAt: new Date()
         };
         const result = await req.db.companies.insertOne(newCompany);
@@ -248,7 +282,7 @@ app.post("/api/companies", async (req, res) => {
 });
 
 // এডমিন প্যানেল থেকে কোম্পানির স্ট্যাটাস (Approved / Rejected) পরিবর্তন করা
-app.patch("/api/companies/:id", async (req, res) => {
+app.patch("/api/companies/:id", verifyToken, verifyAdmin, async (req, res) => {
     try {
         const { id } = req.params;
         const updateData = req.body;
@@ -315,10 +349,10 @@ app.get("/api/application", async (req, res) => {
 });
 
 // ==========================================================================
-//                                🎯 PLANS
+//                                 🎯 PLANS
 // ==========================================================================
 
-// আইডি ফিল্টার দিয়ে নির্দিষ্ট সাবস্ক্রিপশন প্ল্যান খুঁজে বের করা
+// আইডি ফিল্টার দিয়ে নির্দিষ্ট সাবস্ক্রিপশন প্ল্যান খুঁজে বের করা
 app.get("/api/plans", async (req, res) => {
     try {
         const query = {};
@@ -334,7 +368,7 @@ app.get("/api/plans", async (req, res) => {
 });
 
 // ==========================================================================
-//                             🎯 SUBSCRIPTIONS
+//                              🎯 SUBSCRIPTIONS
 // ==========================================================================
 
 // প্রিমিয়াম প্ল্যান কেনা এবং ইউজারের কালেকশনে প্ল্যান আপডেট করা
@@ -351,10 +385,10 @@ app.post("/api/subscription", async (req, res) => {
             createdAt: new Date()
         };
 
-        // ১. সাবস্ক্রিপশন ট্র্যাকিং লগে ডাটা ইনসার্ট করা
+        // ১. সাবস্ক্রিপশন ট্র্যাকিং লগে ডাটা ইনসার্ট করা হচ্ছে
         await req.db.subscriptions.insertOne(subsInfo);
 
-        // ২. মেইন ইউজার অবজেক্টের মেম্বারশিপ প্ল্যান আপডেট করা
+        // ২. মেইন ইউজার অবজেক্টের মেম্বারশিপ প্ল্যান আপডেট করা হচ্ছে
         const filter = { email: data.email };
         const updateDocument = {
             $set: { plan: data.planId }
@@ -368,7 +402,7 @@ app.post("/api/subscription", async (req, res) => {
 });
 
 // ==========================================================================
-//                             ⚙️ SYSTEM RUNNERS
+//                          ⚙️ SYSTEM RUNNERS
 // ==========================================================================
 
 // রুট বেস হেলথ চেক পাথ রাউট
@@ -380,7 +414,6 @@ app.get('/', (req, res) => {
 app.listen(port, () => {
     console.log(`HireLoop app listening on port ${port}`);
 });
-
 
 
 
