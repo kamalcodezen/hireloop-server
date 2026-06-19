@@ -121,27 +121,48 @@ app.get("/api/user", async (req, res) => {
 // ==========================================================================
 
 // অল-ইন-ওয়ান রাউট (সব জব নিয়ে আসা + কোয়েরি ফিল্টারিং)
+// 🔄 এই এপিআই কোডটি তোমার ব্যাকএন্ড ফাইলে রিপ্লেস করো
 app.get("/api/jobs", async (req, res) => {
     try {
         const query = {};
 
-        // ইউআরএল কোয়েরি প্যারামিটার (?companyId=...&status=...) হ্যান্ডেল করা
+        // jobs related সার্চ কুয়েরি ফিল্টার
+        if (req.query.search) {
+            query.$or = [
+                { title: { $regex: req.query.search, $options: "i" } },
+                { companyName: { $regex: req.query.search, $options: "i" } },
+                { companyLocation: { $regex: req.query.search, $options: "i" } },
+                { requirements: { $regex: req.query.search, $options: "i" } }
+            ];
+        }
+        if (req.query.type) query.type = req.query.type;
+        if (req.query.category) query.category = req.query.category;
+        if (req.query.isRemote) query.isRemote = req.query.isRemote === "true";
+        if (req.query.status) query.status = req.query.status;
+
+        // company related 
         if (req.query.companyId) {
             query.companyId = req.query.companyId;
-
             if (req.user?._id.toString() !== req.query.applicantId) {
                 return res.status(403).json({ message: "Forbidden access identity mismatch" });
             }
         }
 
-        if (req.query.status) {
-            query.status = req.query.status;
-        }
+        // pagination related পেজিনেশন লজিক এবং বানান ফিক্স (countDocuments)
+        const page = parseInt(req.query.page) || 1;
+        const perPage = parseInt(req.query.perPage) || 12;
+        const skipItems = (page - 1) * perPage;
 
-        // 👈 কোনো এক্সট্রা লাইন ছাড়া সরাসরি req.db.jobs থেকে ডাটা সর্ট করে আনা
-        const result = await req.db.jobs.find(query).sort({ createdAt: -1 }).toArray();
-        res.json(result);
+        // ১. ওই ফিল্টারে মোট কতটি চাকরি আছে তা গোনা
+        const total = await req.db.jobs.countDocuments(query);
+
+        // ২. শুধুমাত্র ওই পেজের ১২টি চাকরি স্কিপ করে খুঁজে আনা
+        const jobs = await req.db.jobs.find(query).sort({ createdAt: -1 }).skip(skipItems).limit(perPage).toArray();
+
+        // 🚀 ৩. ফ্রন্টএন্ডে চাকরি এবং টোটাল সংখ্যা দুইটাই একসাথে পাঠানো হলো
+        res.json({ jobs, total });
     } catch (error) {
+        console.error("API Error:", error);
         res.status(500).json({ error: "Internal Server Error fetching jobs" });
     }
 });
